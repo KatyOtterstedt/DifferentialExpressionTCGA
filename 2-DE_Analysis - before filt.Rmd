@@ -1,0 +1,206 @@
+---
+title: "2-DE_Analysis - removal BEFORE normalisation"
+author: "Katia Otterstedt"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+      toc: TRUE
+      toc_float: TRUE
+    
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r echo = FALSE, results='hide'}
+load("~/Bioinfo Tesina/Common data gefs&degs.RData") 
+load("~/Bioinfo Tesina/DE_before_filt_data.RData")
+```
+
+# Introduction
+We have successfully acquired the expression and survival data as outlined in the "1-Preprocessing_DE" script. The next step entails the stratification of our patient cohort into two distinct groups, predicated on a defined cutpoint within the RAC1 gene expression profile.
+
+## Libraries
+This analysis requires several libraries, including 'survminer' for cutpoint determination based on survival prognosis, 'edgeR' for conducting Differential Expression (DE) analysis, as well as 'EnhancedVolcano,' 'RColorBrewer,' and 'ggrepel' for the creation of aesthetically pleasing visual representations.
+```{r message=FALSE, warning = FALSE}
+library(survminer)
+library(edgeR)
+library(EnhancedVolcano)
+library(RColorBrewer) # For a colourful plot
+library(ggrepel)
+```
+
+# Obtaining cutpoint
+Employing survival information and expression data which has been normalized in counts per million (cpm) during the previous phase of our analysis, we invoke the 'surv_cutpoint' function to discern a precise cutpoint. The purpose of this cutpoint is to categorize patients according to their RAC1 expression levels.
+```{r}
+COAD.cut <- surv_cutpoint(
+  COAD.surv.before,
+  time = "overall_survival",
+  event = "event",
+  variables = "RAC1")
+
+# Getting the value of cutpoint in CPM and statistic
+summary(COAD.cut)
+
+# Checking some statistics related to out gene of interest
+mean(COAD.surv.before$RAC1, na.rm = TRUE) 
+sd(COAD.surv.before$RAC1, na.rm = TRUE)
+median(COAD.surv.before$RAC1, na.rm = TRUE)
+
+
+# Plotting the cutpoint
+plot(COAD.cut, "RAC1", palette = "npg")
+
+# Extracting cutpoint
+cutpoint <- COAD.cut[["cutpoint"]]$cutpoint
+```
+
+Once the cutpoint has been determined, we proceed to classify patients, generating a vector that encapsulates their unique barcodes alongside their respective categorization in relation to the established cutpoint.
+
+```{r}
+#RAC1 is row 7245
+groups <- ifelse(counts_matrix_normalised[RAC1_column, ] <= cutpoint, "low", "high")
+table(groups)
+```
+
+# Differential expression analysis
+
+## EdgeR
+Our initial approach into acquiring Differentially Expressed Genes (DEGs) involves the utilization of EdgeR. EdgeR operates on a negative binomial distribution model for the identification of DEGs. 
+
+```{r}
+# We first create a DGEList object
+y <- DGEList(counts=counts_matrix_filt_bef, group = groups)
+# Setting "low" expression level as control
+y$samples$group <- relevel(y$samples$group, ref="low")
+# Filter out lowly expressed genes
+keep <- filterByExpr(y) 
+summary(keep)
+y<- y[keep,,keep.lib.sizes=FALSE]
+```
+
+While EdgeR calculates normalization factors for downstream analysis, it retains the original raw counts, refraining from further normalization.
+For the specific scope of this analysis, the inclusion of a model matrix is not mandatory due to the presence of only two conditions. However, it is prudent to retain code pertaining to matrix generation to ensure script versatility under differing circumstances.
+Subsequently, the script proceeds with data normalization and dispersion calculation, culminating in the identification of DEGs. These genes are selected based on a false discovery rate (FDR) threshold of less than 0.05 and a log(FoldChange) threshold greater than 1 or 2.
+```{r  fig.width=50, fig.height=15, warning=FALSE, message=FALSE}
+#Plotting data before normalisation
+nsamples <- ncol(y) #Number of samples
+col <- brewer.pal(nsamples, "Paired")
+lcpm <- cpm(y, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="A. Unnormalised data",ylab="Log-cpm")
+
+# Performs the trimmed mean of M-values (TMM) normalization calculating normalization factors
+y <- calcNormFactors(y, method = "TMM") 
+
+# Creating a design matrix 
+design <- model.matrix(~ 0 + y$samples$group)
+colnames(design) <- levels(y$samples$group)
+
+#Plotting data after normalisation 
+lcpm <- cpm(y, log=TRUE)
+boxplot(lcpm, las=2, col=col, main="")
+title(main="B. Normalised data",ylab="Log-cpm")
+
+# Calculates dispersion using classic mode
+y <- estimateDisp(y, design = design, robust = T) # We use robust to treat possible outliers
+
+# Performs an exact test for negative binomial distribution
+et <- exactTest(y) # Calculates p-values
+
+# Makes decisions about which genes show significant differences
+is.de <- decideTestsDGE(et) # Uses p-values
+summary(is.de)
+
+# Obtaining a summary of the most significant results in the analysis
+# n = Inf => obtaing all results from the analysis
+et_tags<-topTags(et, n = Inf)
+
+x<-as.data.frame(et_tags)
+
+
+# Classifying into upregulated/stable/downregulated using FDR < 0.05
+# logFC >= 1
+x$Expression = ifelse(x$FDR < 0.05 & abs(x$logFC) >= 1, 
+                      ifelse(x$logFC> 1 ,'Up','Down'),
+                      'Stable')
+table(x$Expression)
+
+# logFC >= 2
+x$Expression2 = ifelse(x$FDR < 0.05 & abs(x$logFC) >= 2, 
+                       ifelse(x$logFC> 2 ,'Up','Down'),
+                       'Stable')
+table(x$Expression2)
+
+# Obtaining names of up and down genes
+genes_up <- row.names(x[(x$Expression == "Up")&(x$PValue<0.05), ])
+genes_down<- row.names(x[(x$Expression == "Down")&(x$PValue<0.05), ])
+```
+
+### Visual representation
+To facilitate the understanding of our findings, we decided to presentat results in the form of a volcano plot. This graphical representation effectively showcases both upregulated and downregulated genes, accompanied by their corresponding fold changes and associated p-values.
+```{r fig.width=15, fig.height= 10}
+EnhancedVolcano(x,
+                lab = rownames(x),
+                x= "logFC",
+                y= "PValue",
+                title = "HIGH Rac vs. LOW Rac",
+                pCutoff = 10e-32,
+                FCcutoff = 1,
+                pointSize = 3.0,
+                labSize = 3.0,
+                xlim = c(-5,5),
+                # boxedLabels = TRUE,
+                col = c("azure4", "palegreen3", "skyblue3", "palevioletred"),
+                colAlpha = 0.5,
+                legendPosition = 'right')
+```
+
+
+## LimmaVoom
+The Limma package also performs differential expression analysis, but it is based on a linear model rather than a negative binomial distribution.
+It shares a big proportion of the pipeline with EdgeR, up until the calculation of normalisation factors.
+After that, they diverge and Limma pipeline aplies voom transformation to the normalized and filtered DGEList object. The voom function accepts both normalized and raw counts.
+Then, it adjusts a linear model and calculates the contrasts between conditions
+
+```{r}
+v <- voom(y, design, plot=TRUE) #Produces EList object
+
+fit <- lmFit(v, design)
+head(coef(fit))
+
+contr <- makeContrasts(high - low, levels = colnames(coef(fit)))
+contr
+
+tmp <- contrasts.fit(fit, contr)
+
+tmp <- eBayes(tmp) #Multiple testing errors => removes false positives 
+top.table <- topTable(tmp, sort.by = "P", n = Inf) #Extract all DEGs, sort by pvalue
+head(top.table, 20)
+
+#Get the number of DEGs
+length(which(top.table$adj.P.Val < 0.05))
+
+top.table$Expression = ifelse(top.table$adj.P.Val < 0.05 & abs(top.table$logFC) >= 1, 
+                            ifelse(top.table$logFC> 1 ,'Up','Down'),
+                            'Stable')
+table(top.table$Expression)
+```
+### Visual representation
+```{r fig.width=15, fig.height= 10}
+EnhancedVolcano(top.table,
+                lab = top.table$ID,
+                x= "logFC",
+                y= "adj.P.Val",
+                title = "HIGH Rac vs. LOW Rac",
+                pCutoff = 10e-32,
+                FCcutoff = 1,
+                pointSize = 3.0,
+                labSize = 3.0,
+                xlim = c(-5,5),
+                # boxedLabels = TRUE,
+                col = c("azure4", "palegreen3", "skyblue3", "palevioletred"),
+                colAlpha = 0.5,
+                legendPosition = 'right')
+```

@@ -1,0 +1,215 @@
+---
+title: "1- DIFFERENTIAL EXPRESSION - PREPROCESSING - removal BEFORE normalisation"
+author: "Katia Otterstedt"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+---
+<style>
+body {
+text-align: justify}
+</style>
+
+```{r echo = FALSE, results='hide'}
+load("~/Bioinfo Tesina/Common data gefs&degs.RData") 
+
+```
+
+# Introduction
+This script can be used to extract expression data from TCGA database. In this example we are going to download data from COAD (COlon ADenocarcinoma) and preprocess it to obtain data ready to be used in survival analysis or differential expression analysis.
+
+## Libraries
+This preprocessing requires the folowing libraries: 'TCGAbiolinks' to establish a connection with the TCGA database, 'RTCGA.clinical' for the retrieval of clinical data pertaining to TCGA patients, 'tidyverse' for proficient management of dataframes and streamlining operations, 'SummarizedExperiment' (SE) to prepare the output of the query and 'edgeR' for data normalization.
+
+```{r message=FALSE, warning = FALSE}
+library(RTCGA.clinical)
+library(TCGAbiolinks)
+library(tidyverse)
+library(edgeR)
+library(SummarizedExperiment)
+```
+
+# Preprocessing RNA-Seq data
+## Downloading RNA-Seq data and gene metadata
+Our initial step involves the retrieval of clinical data from TCGA patients, followed by the extraction of their unique barcodes. These barcodes serve as key identifiers for obtaining RNA-Seq data. This approach ensures that all patients with expression values are linked to comprehensive clinical information.
+
+```{r message=FALSE, warning = FALSE}
+clinical_COAD <- GDCquery_clinic("TCGA-COAD")
+barcodes_to_download <- clinical_COAD$bcr_patient_barcode
+```
+
+We employ the extracted barcodes to formulate a query for the retrieval of raw RNA-seq data. It's worth noting that our study exclusively focuses on primary tumor sequencing, excluding cases related to metastasis or recurrence.
+The query results are subsequently downloaded and consolidated into a SummarizedExperiment (SE) object, housing expression data and gene metadata. Using the 'assay()' function, we extract raw counts from this object for our analysis, although normalized expression can be obtained by adjusting the function parameters.
+
+```{r message=FALSE, warning = FALSE, eval = FALSE}
+query_TCGA <- GDCquery(project = "TCGA-COAD",
+                       data.category = "Transcriptome Profiling",
+                       data.type = "Gene Expression Quantification",
+                       experimental.strategy = "RNA-Seq",
+                       workflow.type = "STAR - Counts",
+                       sample.type = "Primary Tumor",
+                       barcode= barcodes_to_download,
+                       access = "open")
+
+GDCdownload(query_TCGA)
+tcga_coad_SE <- GDCprepare(query_TCGA, summarizedExperiment = TRUE)
+
+#Extract counts and gene metadata
+counts_matrix <- assay(tcga_coad_SE) 
+gene_metadata <- as.data.frame(rowData(tcga_coad_SE)) 
+row.names(counts_matrix) <- (gene_metadata$gene_name)
+
+```
+
+Scanning through the counts matrix, we observe the presence of miRNA, lncRNA and another type of short, noncoding RNAs: YRNAs. Given there's no stablished way to deal with them properly, we tried two different workflows: removing them before normalisation of the data, to reduce noise among the values, or remove them afterwards, to keep the library size untouched during normalisation.This is the first approach.
+
+```{r}
+# Filtra las filas basadas en los nombres de fila
+counts_matrix_filt_bef <- counts_matrix[!grepl("^MIR|^LINC|^Y_", rownames(counts_matrix)), ]
+
+#We proceed to check the dimensions of both matrix 
+dim(counts_matrix)
+dim(counts_matrix_filt_bef)
+
+```
+
+
+The resulting counts matrix organizes patients in columns and genes in rows, using EnsembleIDs as gene identifiers. To enhance clarity, we converted these identifiers into gene Symbols for better comprehensibility.
+
+
+## Handling patients with replicate samples
+
+In addressing patients with replicate samples, we recognize the need for a standardized approach. While TCGA doesn't prescribe an official method, we have devised a strategy based on barcode analysis and the guidelines offered by the Broad Institute. Our approach selects one sample per patient, favoring the sample with the lower barcode number, ensuring it represents the primary tumor and excludes recurrence cases.
+
+
+```{r echo = FALSE, results='hide'}
+load("~/Bioinfo Tesina/Common data gefs&degs.RData") 
+
+```
+
+```{r message=FALSE, warning = FALSE}
+source("tcga_replicateFilter.R")
+total_patients <- c(colnames(counts_matrix_filt_bef))
+filtered_patients <- tcga_replicateFilter(tsb = total_patients,
+                                          analyte_target = "RNA")
+counts_matrix_filt_bef <- counts_matrix_filt_bef[,filtered_patients]
+```
+
+For the purposes of our analysis, we classify patients into two groups based on the expression of the RAC1 gene. To facilitate this, we employ CPM normalization, although other methods can be implemented.
+
+```{r message=FALSE, warning = FALSE}
+counts_matrix_normalised <- cpm(counts_matrix_filt_bef)
+```
+
+To facilitate data merging between clinical and expression data, we format the normalized matrix to match the barcode structure in the clinical dataset. Furthermore, we ensure that our gene of interest has no missing values in its expression data.
+
+```{r message=FALSE, warning = FALSE}
+counts_matrix_normalised <- as.data.frame(counts_matrix_normalised) 
+
+# We need the short version of the barcodes to merge expression and survival
+long_patient_names <- colnames(counts_matrix_normalised)
+
+shortened_patient_names <- substr(long_patient_names, 1, 12)
+
+# Converting from vector to df to be added as a row to our normalised counts matrix 
+shortened_patient_names <- as.data.frame(t(shortened_patient_names))
+
+colnames(shortened_patient_names) <- colnames(counts_matrix_normalised)
+
+# Adding short names as a row to normalised matrix 
+counts_matrix_normalised <- rbind(shortened_patient_names, counts_matrix_normalised)
+
+# Changing the name to make the merge easier
+row.names(counts_matrix_normalised)[1] <- "bcr_patient_barcode"
+
+# Searching the row number of our gene of interest
+
+
+table(is.na(counts_matrix_normalised[which(row.names(counts_matrix_normalised) %in% c("RAC1")),])) 
+```
+
+# Preprocessing survival data
+
+Moving forward, we initiate the preprocessing of clinical data. This involves creating event columns (0 for absence, 1 for presence) and calculating an 'overall survival' variable based on the duration between the beginning of the study and the patient's last recorded entry in the experiment.
+Additionally, we introduce two columns denoting the 'experiment's completion' at the 5-year mark. This aids in reliable survival analysis, considering the limited number of patients surviving beyond this timeframe.
+
+```{r message=FALSE, warning = FALSE}
+# Creating a column to represent presence/absence of event
+clinical_COAD$event <- ifelse(clinical_COAD$vital_status == "Alive",
+                                 0,
+                                 1)
+table(clinical_COAD$event) 
+
+#We create an "overal survival variable"
+clinical_COAD$overall_survival <- ifelse(clinical_COAD$vital_status == "Alive",
+                                         clinical_COAD$days_to_last_follow_up, #If alive => last follow up to OS
+                                         clinical_COAD$days_to_death) #If dead => death to OS
+
+```
+
+And here's what 'concluding the experiment prematurely' would resemble::
+
+```{r message=FALSE, warning = FALSE}
+#If still alive at 5 years, we consider 0, didn't present event
+clinical_COAD$event_5y <- ifelse(clinical_COAD$overall_survival >= 1825,
+                                 0, 
+                                 clinical_COAD$event)
+table(clinical_COAD$event_5y)
+
+# If time is longer than 5 years (1825 days) we asign 1825 days as time
+clinical_COAD$overall_survival_5y <- ifelse(clinical_COAD$overall_survival >= 1825,
+                                            1825,
+                                            clinical_COAD$overall_survival)
+``` 
+
+As our analysis only needs specific clinical data columns, we extract them into a more manageable dataframe, omitting any entries with missing values.
+
+```{r message=FALSE, warning = FALSE}
+
+survival_columns <- which(colnames(clinical_COAD) %in% c("overall_survival_5y", "event_5y", "bcr_patient_barcode", "overall_survival", "event"))
+
+COAD.surv.before <- clinical_COAD[,survival_columns]
+table(is.na(COAD.surv.before$event_5y))
+COAD.surv.before <- COAD.surv.before %>%
+  filter(!is.na(event_5y))
+
+RAC1_column <- which(rownames(counts_matrix_normalised) %in% c("RAC1"))
+
+# Combining survival data with expression data of gene of interest
+COAD.surv.before <- merge(COAD.surv.before, t(counts_matrix_normalised[c(1,RAC1_column),]), by = "bcr_patient_barcode")
+# Converting the column to type integer 
+COAD.surv.before$RAC1 <- as.integer(COAD.surv.before$RAC1)
+table(is.na(COAD.surv.before$RAC1))
+```
+
+# Outliers detection
+To use the expression of our gene of interest as a variable for determining a cutpoint, we start by identifying and addressing outliers. We undertake both graphical and mathematical outlier detection methods, with a threshold set at 3 times the standard deviation.
+```{r message=FALSE, warning = FALSE}
+boxplot(COAD.surv.before$RAC1, col = "palevioletred")
+
+# Get mean and standard deviation
+mean = mean(COAD.surv.before$RAC1)
+std = sd(COAD.surv.before$RAC1)
+
+# Get threshold values for outliers
+Tmin = mean-(3*std)
+Tmax = mean+(3*std)
+
+# Find outlier expression values
+outliers <- which(COAD.surv.before$RAC1 < Tmin | COAD.surv.before$RAC1>= Tmax)
+
+# Assing NA values to outliers
+COAD.surv.before$RAC1[outliers] <- NA
+```
+Finally, we convert the normalized expression data into integer values for seamless integration into the Surv_cutpoint function in later stages of our analysis.
+```{r}
+COAD.surv.before$RAC1 <- as.integer(COAD.surv.before$RAC1)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+setwd("C:/Users/byb/Documents/Bioinfo Tesina")
+save(RAC1_column, counts_matrix_filt_bef, counts_matrix_normalised, COAD.surv.before, file = "DE_before_filt_data.RData")
+
+```
