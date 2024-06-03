@@ -67,11 +67,6 @@ The resulting counts matrix organizes patients in columns and genes in rows, usi
 In addressing patients with replicate samples, we recognize the need for a standardized approach. While TCGA doesn't prescribe an official method, we have devised a strategy based on barcode analysis and the guidelines offered by the Broad Institute. Our approach selects one sample per patient, favoring the sample with the lower barcode number, ensuring it represents the primary tumor and excludes recurrence cases.
 
 
-```{r echo = FALSE, results='hide'}
-load("~/Bioinfo Tesina/Common data gefs&degs.RData") 
-
-```
-
 ```{r message=FALSE, warning = FALSE}
 source("tcga_replicateFilter.R")
 total_patients <- c(colnames(counts_matrix))
@@ -115,13 +110,16 @@ table(is.na(counts_matrix_normalised[which(row.names(counts_matrix_normalised) %
 
 Scanning through the counts matrix, we observe the presence of miRNA, lncRNA and another type of short, noncoding RNAs: YRNAs. Given there's no stablished way to deal with them properly, we tried two different workflows: removing them before normalisation of the data, to reduce noise among the values, or remove them afterwards, to keep the library size untouched during normalisation. The following is the latter.
 
+
+## Removing Noncoding RNAs After Normalisation
+We remove miRNA, lncRNA, and YRNA rows from the normalized matrix after normalization to reduce noise among the values.
 ```{r}
-# Filtra las filas basadas en los nombres de fila
+# Filter rows based on row names
 counts_matrix_filt_aft <- counts_matrix_normalised[!grepl("^MIR|^LINC|^Y_", rownames(counts_matrix_normalised)), ]
 # counts_matrix_filt_aft <- as.matrix(counts_matrix_filt_aft[2:nrow(counts_matrix_filt_aft),])
 # counts_matrix_filt_aft <- apply(counts_matrix_filt_aft, 2, as.numeric)
 
-#We proceed to check the dimensions of both matrix 
+# Check the dimensions of both matrices
 dim(counts_matrix)
 dim(counts_matrix_filt_aft)
 
