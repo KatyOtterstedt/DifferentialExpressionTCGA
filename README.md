@@ -35,7 +35,7 @@ install.packages(c("tidyverse", "DESeq2", "edgeR", "ggplot2", "limma", "dplyr", 
 
 Content
 ------------
-Filtering workflow contains the workflow used when filtering patients with outlier expression before performing the analysis and after performing the analysis, standard workflow does not filter any patients but only removes gene expression from non coding genes. No significant differences were found among these two workflows for the performed analysis, but it cannot be ruled out that differences might arise when performing this analysis using a different cohort or gene of interest.
+Filtering workflow contains the workflow used when filtering noncoding gene expression before normalization and after normalization. No significant differences were obtained amongst these two workflows. It cannot be ruled out that differences might arise when performing this analysis using a different cohort or gene of interest. Standard workflow is the workflow used to perform the analysis after considering the two previous posibilities.
 | Filename      | Description   | 
 |------------------|-------------| 
 | 1)Preprocessing_DE | This file contains preprocessing of samples to filter samples with low expression, detection of outliers and data normalisation. Should NOT be overlooked. | 
