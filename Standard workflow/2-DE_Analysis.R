@@ -1,9 +1,5 @@
-## ----echo = FALSE, results='hide'-------------------------------------------------------------------------
-load("~/Bioinfo Tesina/Common data gefs&degs.RData") 
-
-
-
 ## ----message=FALSE, warning = FALSE-----------------------------------------------------------------------
+# Load necessary libraries
 library(survminer)
 library(edgeR)
 library(EnhancedVolcano)
@@ -12,35 +8,36 @@ library(ggrepel)
 
 
 ## ---------------------------------------------------------------------------------------------------------
+# Obtain cutpoint value
 COAD.cut <- surv_cutpoint(
   COAD.surv,
   time = "overall_survival",
   event = "event",
   variables = "RAC1")
 
-# Getting the value of cutpoint in CPM and statistic
+# Display summary and statistics
 summary(COAD.cut)
-
-# Checking some statistics related to out gene of interest
 mean(COAD.surv$RAC1, na.rm = TRUE) 
 sd(COAD.surv$RAC1, na.rm = TRUE)
 median(COAD.surv$RAC1, na.rm = TRUE)
 
 
-# Plotting the cutpoint
+# Plot cutpoint
 plot(COAD.cut, "RAC1", palette = "npg")
 
-# Extracting cutpoint
+# Extract cutpoint
 cutpoint <- COAD.cut[["cutpoint"]]$cutpoint
 
 
 ## ---------------------------------------------------------------------------------------------------------
 #RAC1 is row 7245
+# Assign groups based on cutpoint
 groups <- ifelse(counts_matrix_normalised[7245, ] <= cutpoint, "low", "high")
 table(groups)
 
 
 ## ---------------------------------------------------------------------------------------------------------
+# Normalize data
 # We first create a DGEList object
 y <- DGEList(counts=counts_matrix, group = groups)
 # Setting "low" expression level as control
@@ -52,7 +49,7 @@ y<- y[keep,,keep.lib.sizes=FALSE]
 
 
 ## ----fig.width=50, fig.height=15, warning=FALSE, message=FALSE--------------------------------------------
-#Plotting data before normalisation
+# Plot unnormalized data
 nsamples <- ncol(y) #Number of samples
 col <- brewer.pal(nsamples, "Paired")
 lcpm <- cpm(y, log=TRUE)
@@ -74,7 +71,7 @@ title(main="B. Normalised data",ylab="Log-cpm")
 # Calculates dispersion using classic mode
 y <- estimateDisp(y, design = design, robust = T) # We use robust to treat possible outliers
 
-# Performs an exact test for negative binomial distribution
+# Exact test for differential expression
 et <- exactTest(y) # Calculates p-values
 
 # Makes decisions about which genes show significant differences
@@ -88,7 +85,7 @@ et_tags<-topTags(et, n = Inf)
 x<-as.data.frame(et_tags)
 
 
-# Classifying into upregulated/stable/downregulated using FDR < 0.05
+# Classify genes into upregulated/stable/downregulated using FDR < 0.05
 # logFC >= 1
 x$Expression = ifelse(x$FDR < 0.05 & abs(x$logFC) >= 1, 
                       ifelse(x$logFC> 1 ,'Up','Down'),
@@ -101,12 +98,13 @@ x$Expression2 = ifelse(x$FDR < 0.05 & abs(x$logFC) >= 2,
                        'Stable')
 table(x$Expression2)
 
-# Obtaining names of up and down genes
+# Obtain names of up and down genes
 genes_up <- row.names(x[(x$Expression == "Up")&(x$PValue<0.05), ])
 genes_down<- row.names(x[(x$Expression == "Down")&(x$PValue<0.05), ])
 
 
 ## ----fig.width=15, fig.height= 10-------------------------------------------------------------------------
+# Volcano plot for differential expression
 EnhancedVolcano(x,
                 lab = rownames(x),
                 x= "logFC",
@@ -124,6 +122,7 @@ EnhancedVolcano(x,
 
 
 ## ---------------------------------------------------------------------------------------------------------
+# Linear modeling for differential expression
 v <- voom(y, design, plot=TRUE) #Produces EList object
 
 fit <- lmFit(v, design)
@@ -140,7 +139,7 @@ head(top.table, 20)
 
 #Get the number of DEGs
 length(which(top.table$adj.P.Val < 0.05))
-
+# Classify genes based on logFC and adjust p-values
 top.table$Expression = ifelse(top.table$adj.P.Val < 0.05 & abs(top.table$logFC) >= 1, 
                             ifelse(top.table$logFC> 1 ,'Up','Down'),
                             'Stable')
@@ -148,6 +147,7 @@ table(top.table$Expression)
 
 
 ## ----fig.width=15, fig.height= 10-------------------------------------------------------------------------
+# Volcano plot for differential expression
 EnhancedVolcano(top.table,
                 lab = top.table$ID,
                 x= "logFC",
